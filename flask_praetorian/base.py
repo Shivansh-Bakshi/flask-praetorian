@@ -81,6 +81,7 @@ class Praetorian:
         refresh_jwt_token_hook=None,
     ):
         self.pwd_ctx = None
+        self.mpin_ctx = None
         self.hash_scheme = None
         self.salt = None
 
@@ -148,6 +149,21 @@ class Praetorian:
         )
 
         self.pwd_ctx = CryptContext(
+            schemes=app.config.get(
+                "PRAETORIAN_HASH_ALLOWED_SCHEMES",
+                DEFAULT_HASH_ALLOWED_SCHEMES,
+            ),
+            default=app.config.get(
+                "PRAETORIAN_HASH_SCHEME",
+                DEFAULT_HASH_SCHEME,
+            ),
+            deprecated=app.config.get(
+                "PRAETORIAN_HASH_DEPRECATED_SCHEMES",
+                DEFAULT_HASH_DEPRECATED_SCHEMES,
+            ),
+        )
+
+        self.mpin_ctx = CryptContext(
             schemes=app.config.get(
                 "PRAETORIAN_HASH_ALLOWED_SCHEMES",
                 DEFAULT_HASH_ALLOWED_SCHEMES,
@@ -350,27 +366,50 @@ class Praetorian:
                     """
                 ),
             )
+            PraetorianError.require_condition(
+                hasattr(dummy_user, "mpin"),
+                textwrap.dedent(
+                    """
+                    Instances of user_class must have a mpin attribute:
+                    user_instance.mpin -> <hashed mpin>
+                    """
+                ),
+            )
 
         return user_class
 
-    def authenticate(self, username, password):
+    def authenticate(self, username, password=None, mpin=None):
         """
         Verifies that a password matches the stored password for that username.
         If verification passes, the matching user instance is returned
         """
         PraetorianError.require_condition(
+            (password is not None) or (mpin is not None),
+            "Both password and mpin cannot be empty"
+        )
+        PraetorianError.require_condition(
             self.user_class is not None,
             "Praetorian must be initialized before this method is available",
         )
         user = self.user_class.lookup(username)
-        AuthenticationError.require_condition(
-            user is not None
-            and self._verify_password(
-                password,
-                user.password,
-            ),
-            "The username and/or password are incorrect",
-        )
+        if password is not None:
+            AuthenticationError.require_condition(
+                user is not None
+                and self._verify_password(
+                    password,
+                    user.password,
+                ),
+                "The username and/or password are incorrect",
+            )
+        else:
+            AuthenticationError.require_condition(
+                user is not None
+                and self._verify_mpin(
+                    mpin,
+                    user.mpin,
+                ),
+                "The username and/or mpin are incorrect",
+            )
 
         """
         If we are set to PRAETORIAN_HASH_AUTOUPDATE then check our hash
@@ -399,6 +438,17 @@ class Praetorian:
             "Praetorian must be initialized before this method is available",
         )
         return self.pwd_ctx.verify(raw_password, hashed_password)
+    
+    def _verify_mpin(self, raw_mpin, hashed_mpin):
+        """
+        Verifies that a plaintext password matches the hashed version of that
+        password using the stored passlib password context
+        """
+        PraetorianError.require_condition(
+            self.mpin_ctx is not None,
+            "Praetorian must be initialized before this method is available",
+        )
+        return self.mpin_ctx.verify(raw_mpin, hashed_mpin)
 
     @deprecated("Use `hash_password` instead.")
     def encrypt_password(self, raw_password):
@@ -1100,6 +1150,21 @@ class Praetorian:
          zillions of warnings suck.
         """
         return self.pwd_ctx.hash(raw_password)
+    
+    def hash_mpin(self, raw_mpin):
+        """
+        Hashes a plaintext password using the stored passlib password context
+        """
+        PraetorianError.require_condition(
+            self.mpin_ctx is not None,
+            "Praetorian must be initialized before this method is available",
+        )
+        """
+        `scheme` is now set with self.pwd_ctx.update(default=scheme) due
+            to the depreciation in upcoming passlib 2.0.
+         zillions of warnings suck.
+        """
+        return self.mpin_ctx.hash(raw_mpin)
 
     def verify_and_update(self, user=None, password=None):
         """
